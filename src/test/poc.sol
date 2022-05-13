@@ -202,7 +202,6 @@ contract ContractTest is DSTest {
     receive() external payable {
 
         rari_Comptroller.exitMarket(address(fusdc_127));
-        emit log_bytes("Reentered Successfully!");
 
     }
 
