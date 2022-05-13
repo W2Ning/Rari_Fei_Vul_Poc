@@ -41,6 +41,10 @@ https://github.com/compound-finance/compound-protocol/blob/ae4388e780a8d596d9761
 `Rari`虽然吸取了前人的教训,没有引入不兼容的Token, 但是自己作死, 在`CEther`合约中使用了`call.value`来进行`ETH`的转账.
 首次在不借助合作伙伴的情况下, 自主独立创造了漏洞环境.
 
+```
+https://etherscan.io/address/0xd77e28a1b9a9cfe1fc2eee70e391c05d25853cbf#code
+```
+
 ![image](https://user-images.githubusercontent.com/33406415/168264813-bc11e823-fe35-4de4-b9bd-b453e8ae65a1.png)
 
 
